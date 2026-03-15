@@ -270,11 +270,12 @@ body {
 .map-wrap img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
   object-position: center;
   display: block;
   pointer-events: none;
   user-select: none;
+  background: #c8dde8;
 }
 
 #overlaySvg {
@@ -1047,9 +1048,26 @@ document.getElementById('overlaySvg').addEventListener('click', function(e) {
   document.getElementById('overlaySvg').classList.add('done');
 
   const rect = document.getElementById('mapWrap').getBoundingClientRect();
-  const cx = e.clientX - rect.left;
-  const cy = e.clientY - rect.top;
-  const W = rect.width, H = rect.height;
+  const img = document.querySelector('#mapWrap img');
+  // Gerçek görüntü sınırlarını hesapla (object-fit: contain)
+  const imgNatW = img.naturalWidth || 1456;
+  const imgNatH = img.naturalHeight || 816;
+  const containerW = rect.width, containerH = rect.height;
+  const scale = Math.min(containerW / imgNatW, containerH / imgNatH);
+  const imgW = imgNatW * scale;
+  const imgH = imgNatH * scale;
+  const imgLeft = (containerW - imgW) / 2;
+  const imgTop  = (containerH - imgH) / 2;
+
+  const rawX = e.clientX - rect.left;
+  const rawY = e.clientY - rect.top;
+  const cx = rawX - imgLeft;
+  const cy = rawY - imgTop;
+  const W = imgW, H = imgH;
+
+  // Harita dışına tıklandıysa iptal
+  if (cx < 0 || cy < 0 || cx > imgW || cy > imgH) { isDone = false; return; }
+
   const q = qs[qi];
   const d = DIFF[cfg.diff];
 
@@ -1084,29 +1102,35 @@ document.getElementById('overlaySvg').addEventListener('click', function(e) {
   // Draw temp markers
   const svg = document.getElementById('overlaySvg');
 
+  // SVG kaplama tüm mapWrap'i kaplıyor; resim offset'ini ekle
+  const { left: il, top: it } = getImgBounds();
+  const scx = cx + il, scy = cy + it;
+  const spts = pts.map(p => ({ x: p.x + il, y: p.y + it }));
+  const sclosest = { x: closest.x + il, y: closest.y + it };
+
   // Ripple
-  const ripple = mkSVG('circle', { cx, cy, r: 6, fill: 'none',
+  const ripple = mkSVG('circle', { cx: scx, cy: scy, r: 6, fill: 'none',
     stroke: isOk ? '#16a34a' : '#dc2626', 'stroke-width': '2',
     class: 'ripple-el temp-m' });
   svg.appendChild(ripple);
 
   // User dot
-  svg.appendChild(mkSVG('circle', { cx, cy, r: 6,
+  svg.appendChild(mkSVG('circle', { cx: scx, cy: scy, r: 6,
     fill: isOk ? '#16a34a' : '#dc2626', stroke: '#fff', 'stroke-width': '1.5',
     class: 'temp-m' }));
 
   if (!isOk) {
     // Arrow to target
-    svg.appendChild(mkSVG('line', { x1: cx, y1: cy, x2: closest.x, y2: closest.y,
+    svg.appendChild(mkSVG('line', { x1: scx, y1: scy, x2: sclosest.x, y2: sclosest.y,
       stroke: '#dc2626', 'stroke-width': '1', 'stroke-dasharray': '5,3',
       opacity: '0.7', class: 'temp-m' }));
-    pts.forEach(p => {
+    spts.forEach(p => {
       svg.appendChild(mkSVG('circle', { cx: p.x, cy: p.y, r: 7,
         fill: '#16a34a', stroke: '#fff', 'stroke-width': '1.5', class: 'temp-m' }));
     });
-    if (pts.length > 1) {
+    if (spts.length > 1) {
       svg.appendChild(mkSVG('polyline', {
-        points: pts.map(p => `${p.x},${p.y}`).join(' '),
+        points: spts.map(p => `${p.x},${p.y}`).join(' '),
         fill: 'none', stroke: '#16a34a', 'stroke-width': '1.5',
         'stroke-dasharray': '4,3', opacity: '0.5', class: 'temp-m'
       }));
@@ -1114,7 +1138,7 @@ document.getElementById('overlaySvg').addEventListener('click', function(e) {
   }
 
   // Temp label
-  const tx = closest.x, ty = closest.y;
+  const tx = sclosest.x, ty = sclosest.y;
   const lw = Math.min(120, W * 0.14);
   svg.appendChild(mkSVG('rect', { x: tx - lw/2, y: ty - 20, width: lw, height: 14,
     fill: '#ffffff', stroke: '#e2e0db', 'stroke-width': '0.8', rx: '4',
@@ -1125,7 +1149,9 @@ document.getElementById('overlaySvg').addEventListener('click', function(e) {
   lt.textContent = q.name.length > 16 ? q.name.slice(0, 14) + '…' : q.name;
   svg.appendChild(lt);
 
-  pendingDot = { tx, ty, isOk };
+  // tx,ty are image-relative; add offset for SVG drawing
+  const { left: _il, top: _it } = getImgBounds();
+  pendingDot = { tx: tx + _il, ty: ty + _it, isOk };
 
   // Streak
   if (streak >= 2) {
@@ -1176,6 +1202,7 @@ function nextQ() {
   document.querySelectorAll('.temp-m').forEach(e => e.remove());
   if (pendingDot) {
     const svg = document.getElementById('overlaySvg');
+    const { left: pl, top: pt, W: pW, H: pH } = getImgBounds();
     svg.appendChild(mkSVG('circle', {
       cx: pendingDot.tx, cy: pendingDot.ty, r: 5,
       fill: pendingDot.isOk ? '#16a34a' : '#dc2626',
@@ -1226,6 +1253,23 @@ function mkSVG(tag, attrs) {
   Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
   return el;
 }
+
+function getImgBounds() {
+  const wrap = document.getElementById('mapWrap');
+  const img  = document.querySelector('#mapWrap img');
+  const rect = wrap.getBoundingClientRect();
+  const natW = img.naturalWidth  || 1456;
+  const natH = img.naturalHeight || 816;
+  const scale = Math.min(rect.width / natW, rect.height / natH);
+  const imgW = natW * scale;
+  const imgH = natH * scale;
+  return {
+    left: (rect.width  - imgW) / 2,
+    top:  (rect.height - imgH) / 2,
+    W: imgW, H: imgH
+  };
+}
+
 
 // ═══════════════════ END ════════════════════
 function endGame() {
